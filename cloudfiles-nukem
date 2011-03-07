@@ -43,10 +43,10 @@ begin
           	String,
           	'Rackspace CloudFiles Username (required)') {|value| username = value}
   	opts.on('-k',
-          	'--key SECRET',
+          	'--key API_KEY',
           	String,
           	'Rackspace API Key (required)') {|key| api_key = key}
-  	opts.on('-f',
+  	opts.on('-p',
 			'--prefix PREFIX',
         	String,
         	'Pass a prefix to search for objects that start with a certain string that you want deleted (defaults to deleting entire container)') do |val|
@@ -96,7 +96,14 @@ rescue Exception => e
 end
 
 containers_to_delete.each do |container_to_delete|
-  	puts "DELETING: #{container_to_delete} with #{username} and #{api_key} in the filter #{filter}"
+	begin
+		cloudfiles.container(container_to_delete)
+	rescue CloudFiles::Exception::NoSuchContainer => e
+		puts e.message
+		next
+	end
+
+	puts "DELETING: #{container_to_delete} with #{username} and #{api_key} with the prefix #{prefix}"
 
   	# Thread management
   	threads = []
@@ -119,13 +126,13 @@ containers_to_delete.each do |container_to_delete|
       		end
 			
 			container = cf.container(container_to_delete)
-			keys = container.objects(:limit => 1000, :marker => marker, :prefix => prefix)
-			marker = keys.last[:key] unless keys.empty?
-    		keys.each do |key|
-       			queue.enq(key[:key])
+			objects = container.objects(:limit => 1000, :marker => marker, :prefix => prefix)
+			marker = objects.last unless objects.empty?
+    		objects.each do |object|
+       			queue.enq(object)
         		total_listed += 1
     		end
-    	end until keys.empty?
+    	end until objects.empty?
     	thread_count.times {queue.enq(:END_OF_CONTAINER)}
 	end
 
