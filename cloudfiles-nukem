@@ -18,9 +18,9 @@ require 'optparse'
 require 'logger'
 require 'thread'
 begin
-  	require 'cloudfiles'
+    require 'cloudfiles'
 rescue LoadError
-  	puts "Missing the cloudfiles gem! Try: sudo gem install cloudfiles"
+    puts "Missing the cloudfiles gem! Try: sudo gem install cloudfiles"
 end
 
 username = nil
@@ -34,52 +34,52 @@ buckets = []
 
 # Parse the command line
 begin
-  	opts = OptionParser.new
-  	opts.banner = "Usage: #{$PROGRAM_NAME} [options] buckets..."
-  	opts.separator ''
-  	opts.separator 'Options:'
-  	opts.on('-u',
-          	'--user USERNAME',
-          	String,
-          	'Rackspace CloudFiles Username (required)') {|value| username = value}
-  	opts.on('-k',
-          	'--key API_KEY',
-          	String,
-          	'Rackspace API Key (required)') {|key| api_key = key}
-  	opts.on('-p',
-			'--prefix PREFIX',
-        	String,
-        	'Pass a prefix to search for objects that start with a certain string that you want deleted (defaults to deleting entire container)') do |val|
-				prefix = val
-			end
-  	opts.on('-t',
-          	'--threads COUNT',
-          	Integer,
-          	"Number of simultaneous threads (default #{thread_count})") do |val|
-            	thread_count = val
-            	max_queue = val * 1000
-          	end
-  	opts.on('-h', '--help', 'Show this message') do
-    	puts opts
-    	exit
-  	end
-  	opts.separator ''
-  	opts.separator ''
-  	containers_to_delete = opts.parse(ARGV)
-  	if containers_to_delete.empty?
-    	puts "You must specify at least one container to delete!"
-    	puts opts
-    	exit
-  	end
-  	unless username and api_key
-    	puts "The --user and --key options are required!"
-    	puts opts
-    	exit
-  	end
+  opts = OptionParser.new
+  opts.banner = "Usage: #{$PROGRAM_NAME} [options] buckets..."
+  opts.separator ''
+  opts.separator 'Options:'
+  opts.on('-u',
+          '--user USERNAME',
+          String,
+          'Rackspace CloudFiles Username (required)') {|value| username = value}
+  opts.on('-k',
+          '--key API_KEY',
+          String,
+          'Rackspace API Key (required)') {|key| api_key = key}
+  opts.on('-p',
+    '--prefix PREFIX',
+        String,
+        'Pass a prefix to search for objects that start with a certain string that you want deleted (defaults to deleting entire container)') do |val|
+      prefix = val
+    end
+  opts.on('-t',
+          '--threads COUNT',
+          Integer,
+          "Number of simultaneous threads (default #{thread_count})") do |val|
+            thread_count = val
+            max_queue = val * 1000
+          end
+  opts.on('-h', '--help', 'Show this message') do
+    puts opts
+    exit
+  end
+  opts.separator ''
+  opts.separator ''
+  containers_to_delete = opts.parse(ARGV)
+  if containers_to_delete.empty?
+    puts "You must specify at least one container to delete!"
+    puts opts
+    exit
+  end
+  unless username and api_key
+    puts "The --user and --key options are required!"
+    puts opts
+    exit
+  end
 rescue OptionParser::ParseError
-  	puts "Oops... #{$!}"
-  	puts opts
-  	exit
+    puts "Oops... #{$!}"
+    puts opts
+    exit
 end
 
 # Make a connection for bucket deletion
@@ -87,90 +87,76 @@ log = Logger.new(STDOUT)
 log.level = Logger::ERROR
 cloudfiles = CloudFiles::Connection.new(:username => username, :api_key => api_key)
 begin
-  	cloudfiles.containers  # Confirm credentials
+  cloudfiles.containers  # Confirm credentials
 rescue Exception => e
-	puts "Unable to get containers. Check your username and api key."
-	puts e.message
-  	puts opts
-  	exit
+  puts "Unable to get containers. Check your username and api key."
+  puts e.message
+    puts opts
+    exit
 end
 
 containers_to_delete.each do |container_to_delete|
-	begin
-		cloudfiles.container(container_to_delete)
-	rescue CloudFiles::Exception::NoSuchContainer => e
-		puts e.message
-		next
-	end
+  begin
+    cloudfiles.container(container_to_delete)
+  rescue CloudFiles::Exception::NoSuchContainer => e
+    puts e.message
+    next
+  end
 
-	puts "DELETING: #{container_to_delete} with #{username} and #{api_key} with the prefix #{prefix}"
+  puts "DELETING: #{container_to_delete} with #{username} and #{api_key} with the prefix #{prefix}"
 
-  	# Thread management
-  	threads = []
-  	queue = Queue.new
-  	mutex_total = Mutex.new
+  # Thread management
+  threads = []
+  queue = Queue.new
+  
+  # Key retrieval thread
+  threads << Thread.new do
+    Thread.current[:number] = "CATALOG"
+    #puts "Starting catalog thread..."
+    cf = CloudFiles::Connection.new(:username => username, :api_key => api_key)
+    marker = ''
+    begin
+      while queue.length > max_queue
+        sleep 1
+      end
+    
+      container = cf.container(container_to_delete)
+      objects = container.objects(:limit => 1000, :marker => marker, :prefix => prefix)
+      marker = objects.last unless objects.empty?
+      objects.each do |object|
+          queue.enq(object)
+      end
+    end until objects.empty?
+    thread_count.times {queue.enq(:END_OF_CONTAINER)}
+  end
 
-  	# Tracking variables
-  	total_listed = 0
-  	total_deleted = 0
+    
+  thread_count.times do |count|
+    threads << Thread.new(count) do |number|
+      Thread.current[:number] = number
+      #puts "Starting deletion thread #{number}..."
+      cf = CloudFiles::Connection.new(:username => username, :api_key => api_key)
+      begin
+        key = queue.deq
+        unless key == :END_OF_CONTAINER
+          container = cf.container(container_to_delete)
+          begin
+            container.delete_object(key)
+          rescue CloudFiles::Exception::NoSuchObject => e
+            puts "File not found: #{key}"
+          end
+          puts "Deleting #{key}"
+        end
+      end until (key == :END_OF_CONTAINER)
+    end
+  end
 
-  	# Key retrieval thread
-  	threads << Thread.new do
-    	Thread.current[:number] = "CATALOG"
-    	puts "Starting catalog thread..."
-    	cf = CloudFiles::Connection.new(:username => username, :api_key => api_key)
-    	marker = ''
-    	begin
-      		while queue.length > max_queue
-        		sleep 1
-      		end
-			
-			container = cf.container(container_to_delete)
-			objects = container.objects(:limit => 1000, :marker => marker, :prefix => prefix)
-			marker = objects.last unless objects.empty?
-    		objects.each do |object|
-       			queue.enq(object)
-        		total_listed += 1
-    		end
-    	end until objects.empty?
-    	thread_count.times {queue.enq(:END_OF_CONTAINER)}
-	end
+  threads.each do |t|
+    begin
+      t.join
+    rescue RuntimeError => e
+      puts "Failure on thread #{t[:number]}: #{e.message}"
+    end
+  end
 
-  	start_time = Time.now
-  	thread_count.times do |count|
-    	threads << Thread.new(count) do |number|
-      		Thread.current[:number] = number
-      		puts "Starting deletion thread #{number}..."
-      		cf = CloudFiles::Connection.new(:username => username, :api_key => api_key)
-      		begin
-        		key = queue.deq
-        		unless key == :END_OF_CONTAINER
-		  			container = cf.container(container_to_delete)
-					container.delete_object(key)
-          			mutex_total.synchronize {total_deleted += 1}
-          			if (rand(1000) == 1)
-						puts "Deleting #{key}"
-            			elapsed = Time.now - start_time
-            			puts "#{elapsed}: Deleted #{total_deleted} out of #{total_listed}"
-          			end
-        		end
-      		end until (key == :END_OF_CONTAINER)
-    	end
-  	end
-
-  	threads.each do |t|
-    	begin
-      		t.join
-    	rescue RuntimeError => e
-      		puts "Failure on thread #{t[:number]}: #{e.message}"
-    	end
-  	end
-
-  	# Clean up any stragglers and kill the container
-  	if prefix == ''
-  		puts "Container #{container_to_delete} deleted!" if cloudfiles.delete_container(container_to_delete)
-  	else
-		puts "Files in #{container_to_delete} deleted with prefix #{prefix}!"
-  	end
-  	puts
 end
