@@ -119,9 +119,16 @@ containers_to_delete.each do |container_to_delete|
       while queue.length > max_queue
         sleep 1
       end
-    
-      container = cf.container(container_to_delete)
-      objects = container.objects(:limit => 1000, :marker => marker, :prefix => prefix)
+      begin
+        container = cf.container(container_to_delete)
+      rescue Exception => e
+	next
+      end
+      begin
+        objects = container.objects(:limit => 1000, :marker => marker, :prefix => prefix)
+      rescue Exception => e
+        next
+      end
       marker = objects.last unless objects.empty?
       objects.each do |object|
           queue.enq(object)
@@ -139,9 +146,17 @@ containers_to_delete.each do |container_to_delete|
       begin
         key = queue.deq
         unless key == :END_OF_CONTAINER
-          container = cf.container(container_to_delete)
+	  begin
+            container = cf.container(container_to_delete)
+	  rescue Exception => e
+	    next
+	  end
           begin
+	    begin
             container.delete_object(key)
+	    rescue Exception => e
+              next
+	    end
           rescue CloudFiles::Exception::NoSuchObject => e
             puts "File not found: #{key}"
           end
